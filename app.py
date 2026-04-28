@@ -8,28 +8,28 @@ from sklearn.metrics import (
     recall_score, f1_score, classification_report
 )
 import io
-
+ 
 app = Flask(__name__)
 CORS(app)  # Permite peticiones desde GitHub Pages
-
+ 
 # Cargar modelos al iniciar
 with open("logistic_model.pkl", "rb") as f:
     logreg = pickle.load(f)
-
+ 
 with open("mlp_model.pkl", "rb") as f:
     mlp = pickle.load(f)
-
+ 
 with open("scaler.pkl", "rb") as f:
     scaler = pickle.load(f)
-
-# Columnas del dataset (sin ID y sin la variable objetivo)
+ 
+# Columnas del dataset (sin variable objetivo)
 FEATURE_COLUMNS = [
     "ID", "LIMIT_BAL", "SEX", "EDUCATION", "MARRIAGE", "AGE",
     "PAY_0", "PAY_2", "PAY_3", "PAY_4", "PAY_5", "PAY_6",
     "BILL_AMT1", "BILL_AMT2", "BILL_AMT3", "BILL_AMT4", "BILL_AMT5", "BILL_AMT6",
     "PAY_AMT1", "PAY_AMT2", "PAY_AMT3", "PAY_AMT4", "PAY_AMT5", "PAY_AMT6"
 ]
-
+ 
 def get_model(model_name):
     if model_name == "logistic":
         return logreg
@@ -37,29 +37,28 @@ def get_model(model_name):
         return mlp
     else:
         return None
-
+ 
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({"status": "API funcionando correctamente"})
-
+ 
 @app.route("/predict/individual", methods=["POST"])
 def predict_individual():
     try:
         data = request.get_json()
         model_name = data.get("model", "logistic")
         features = data.get("features", {})
-
+ 
         model = get_model(model_name)
         if model is None:
             return jsonify({"error": "Modelo no válido"}), 400
-
-        # Construir vector de features en orden correcto
+ 
         input_data = np.array([[features[col] for col in FEATURE_COLUMNS]])
         input_scaled = scaler.transform(input_data)
-
+ 
         prediction = int(model.predict(input_scaled)[0])
         probabilities = model.predict_proba(input_scaled)[0].tolist()
-
+ 
         return jsonify({
             "prediction": prediction,
             "label": "Default" if prediction == 1 else "No Default",
@@ -67,38 +66,50 @@ def predict_individual():
             "probability_default": round(probabilities[1] * 100, 2),
             "model": model_name
         })
-
+ 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
+ 
+ 
 @app.route("/predict/batch", methods=["POST"])
 def predict_batch():
     try:
         model_name = request.form.get("model", "logistic")
         file = request.files.get("file")
-
+ 
         if not file:
             return jsonify({"error": "No se envió ningún archivo"}), 400
-
+ 
         model = get_model(model_name)
         if model is None:
             return jsonify({"error": "Modelo no válido"}), 400
-
-        # Leer CSV
-        df = pd.read_csv(io.StringIO(file.read().decode("utf-8")))
-
+ 
+        # Leer CSV, XLS o XLSX según extensión
+        filename = file.filename.lower()
+        file_bytes = file.read()
+ 
+        if filename.endswith(".csv"):
+            df = pd.read_csv(io.StringIO(file_bytes.decode("utf-8")))
+        elif filename.endswith(".xlsx"):
+            df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl")
+        elif filename.endswith(".xls"):
+            df = pd.read_excel(io.BytesIO(file_bytes), engine="xlrd", header=1)
+        else:
+            return jsonify({"error": "Formato no soportado. Usa CSV, XLS o XLSX."}), 400
+ 
+        df.columns = df.columns.str.strip()
+ 
         # Verificar si tiene columna objetivo
         has_labels = "default payment next month" in df.columns
-
+ 
         # Obtener features
         X = df[FEATURE_COLUMNS].values
         X_scaled = scaler.transform(X)
-
+ 
         predictions = model.predict(X_scaled).tolist()
-
+ 
         result = {"predictions": predictions, "model": model_name, "total": len(predictions)}
-
+ 
         if has_labels:
             y_true = df["default payment next month"].values
             cm = confusion_matrix(y_true, predictions).tolist()
@@ -112,12 +123,12 @@ def predict_batch():
             result["has_labels"] = True
         else:
             result["has_labels"] = False
-
+ 
         return jsonify(result)
-
+ 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
+ 
+ 
 if __name__ == "__main__":
     app.run(debug=False)
